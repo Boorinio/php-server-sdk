@@ -58,27 +58,27 @@ class CurlEventPublisher implements EventPublisher
 
     public function publish(string $payload): bool
     {
-        if (!$this->_isWindows) {
-            $args = $this->createCurlArgs($payload);
-            return $this->makeCurlRequest($args);
-        }
-
         $tmpfile = tempnam(sys_get_temp_dir(), 'ld-');
         if ($tmpfile === false) {
             return false;
         }
-
         if (file_put_contents($tmpfile, $payload) === false) {
+            unlink($tmpfile);
             return false;
-        };
+        }
 
-        $args = $this->createPowershellArgs($tmpfile);
-        $this->makePowershellRequest($args);
+        if ($this->_isWindows) {
+            $args = $this->createPowershellArgs($tmpfile);
+            $this->makePowershellRequest($args);
+        } else {
+            $args = $this->createCurlArgs($tmpfile) . " ; rm -f " . escapeshellarg($tmpfile);
+            $this->makeCurlRequest($args);
+        }
 
         return true;
     }
 
-    private function createCurlArgs(string $payload): string
+    private function createCurlArgs(string $payloadFile): string
     {
         $scheme = $this->_ssl ? "https://" : "http://";
         $args = " -X POST";
@@ -89,8 +89,8 @@ class CurlEventPublisher implements EventPublisher
             $args.= " -H " . escapeshellarg("$key: $value");
         }
 
-        $args.= " -d " . escapeshellarg($payload);
-        $args.= " " . escapeshellarg($scheme . $this->_host . ":" . $this->_port . $this->_path . "/bulk");
+        $args .= " --data-binary @" . escapeshellarg($payloadFile);
+        $args .= " " . escapeshellarg($scheme . $this->_host . ":" . $this->_port . $this->_path . "/bulk");
         return $args;
     }
 
@@ -99,7 +99,7 @@ class CurlEventPublisher implements EventPublisher
      */
     private function makeCurlRequest(string $args): bool
     {
-        $cmd = $this->_curl . " " . $args . ">> /dev/null 2>&1 &";
+        $cmd = "( " . $this->_curl . " " . $args . " ) >> /dev/null 2>&1 &";
         shell_exec($cmd);
         return true;
     }
