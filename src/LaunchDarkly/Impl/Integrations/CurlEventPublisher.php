@@ -25,6 +25,11 @@ class CurlEventPublisher implements EventPublisher
     private int $_timeout;
     private bool $_isWindows;
 
+    /**
+     * The directory named by the payload_temp_dir option, or null if the option is not set.
+     */
+    private ?string $_payloadTempDir;
+
     /** @var array<string, string> */
     private array $_eventHeaders;
 
@@ -54,31 +59,78 @@ class CurlEventPublisher implements EventPublisher
         $this->_connectTimeout = intval($options['connect_timeout']);
         $this->_timeout = intval($options['timeout']);
         $this->_isWindows = PHP_OS_FAMILY == 'Windows';
+        $this->_payloadTempDir = $this->resolvePayloadTempDir($options['payload_temp_dir'] ?? null);
+    }
+
+    /**
+     * Reads the payload_temp_dir option.
+     *
+     * The value true means the system temporary directory. A non-empty string is a directory path.
+     * Any other value means the option is not set.
+     */
+    private function resolvePayloadTempDir(mixed $option): ?string
+    {
+        if ($option === true) {
+            return sys_get_temp_dir();
+        }
+
+        return (is_string($option) && $option !== '') ? $option : null;
     }
 
     public function publish(string $payload): bool
     {
-        $tmpfile = tempnam(sys_get_temp_dir(), 'ld-');
-        if ($tmpfile === false) {
-            return false;
-        }
-        if (file_put_contents($tmpfile, $payload) === false) {
-            unlink($tmpfile);
-            return false;
-        }
-
+        // Windows always sends the payload from a file.
         if ($this->_isWindows) {
-            $args = $this->createPowershellArgs($tmpfile);
-            $this->makePowershellRequest($args);
-        } else {
-            $args = $this->createCurlArgs($tmpfile) . " ; rm -f " . escapeshellarg($tmpfile);
-            $this->makeCurlRequest($args);
+            $payloadFile = $this->writePayloadFile($payload);
+            if ($payloadFile === null) {
+                return false;
+            }
+
+            return $this->makePowershellRequest($this->createPowershellArgs($payloadFile));
         }
 
-        return true;
+        if ($this->_payloadTempDir === null) {
+            return $this->makeCurlRequest($this->createCurlArgs("-d " . escapeshellarg($payload)));
+        }
+
+        $payloadFile = $this->writePayloadFile($payload);
+        if ($payloadFile === null) {
+            return false;
+        }
+
+        return $this->makeCurlRequest(
+            $this->createCurlArgs("--data-binary @" . escapeshellarg($payloadFile)),
+            $payloadFile
+        );
     }
 
-    private function createCurlArgs(string $payloadFile): string
+    /**
+     * Writes the payload to a new file.
+     *
+     * The file goes in the directory named by the payload_temp_dir option. The default is the
+     * system temporary directory.
+     *
+     * @return ?string the path of the file, or null if the whole payload could not be written
+     */
+    private function writePayloadFile(string $payload): ?string
+    {
+        $payloadFile = tempnam($this->_payloadTempDir ?? sys_get_temp_dir(), 'ld-');
+        if ($payloadFile === false) {
+            return null;
+        }
+
+        if (file_put_contents($payloadFile, $payload) !== strlen($payload)) {
+            unlink($payloadFile);
+            return null;
+        }
+
+        return $payloadFile;
+    }
+
+    /**
+     * Builds the curl command line. The caller supplies the option that provides the payload.
+     */
+    private function createCurlArgs(string $payloadOption): string
     {
         $scheme = $this->_ssl ? "https://" : "http://";
         $args = " -X POST";
@@ -89,18 +141,23 @@ class CurlEventPublisher implements EventPublisher
             $args.= " -H " . escapeshellarg("$key: $value");
         }
 
-        $args .= " --data-binary @" . escapeshellarg($payloadFile);
-        $args .= " " . escapeshellarg($scheme . $this->_host . ":" . $this->_port . $this->_path . "/bulk");
+        $args.= " " . $payloadOption;
+        $args.= " " . escapeshellarg($scheme . $this->_host . ":" . $this->_port . $this->_path . "/bulk");
         return $args;
     }
 
     /**
      * @psalm-suppress ForbiddenCode
      */
-    private function makeCurlRequest(string $args): bool
+    private function makeCurlRequest(string $args, ?string $payloadFile = null): bool
     {
-        $cmd = "( " . $this->_curl . " " . $args . " ) >> /dev/null 2>&1 &";
-        shell_exec($cmd);
+        $cmd = $this->_curl . " " . $args;
+        if ($payloadFile !== null) {
+            // The subshell keeps the removal grouped with the request that reads the file.
+            $cmd = "( " . $cmd . " ; rm -f " . escapeshellarg($payloadFile) . " )";
+        }
+
+        shell_exec($cmd . " >> /dev/null 2>&1 &");
         return true;
     }
 
