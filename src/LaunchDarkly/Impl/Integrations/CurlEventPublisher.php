@@ -86,7 +86,7 @@ class CurlEventPublisher implements EventPublisher
                 return false;
             }
 
-            return $this->makePowershellRequest($this->createPowershellArgs($payloadFile));
+            return $this->makePowershellRequest($payloadFile);
         }
 
         if ($this->_payloadTempDir === null) {
@@ -161,7 +161,14 @@ class CurlEventPublisher implements EventPublisher
         return true;
     }
 
-    private function createPowershellArgs(string $payloadFile): string
+    /**
+     * Sends the payload with PowerShell, in the background.
+     *
+     * PowerShell reads the payload from the named file. The file is removed when the request ends.
+     *
+     * @psalm-suppress ForbiddenCode
+     */
+    private function makePowershellRequest(string $payloadFile): bool
     {
         $headerString = "";
         foreach ($this->_eventHeaders as $key => $value) {
@@ -179,14 +186,6 @@ class CurlEventPublisher implements EventPublisher
         $args.= " -Uri " . escapeshellarg($scheme . $this->_host . ":" . $this->_port . $this->_path . "/bulk");
         $args.= " ; Remove-Item '$payloadFile'";
 
-        return $args;
-    }
-
-    /**
-     * @psalm-suppress ForbiddenCode
-     */
-    private function makePowershellRequest(string $args): bool
-    {
         $cmd = base64_encode(iconv('ISO-8859-1', 'UTF-16LE', $args));
         shell_exec("start /B powershell.exe -encodedCommand $cmd > nul 2>&1");
 
