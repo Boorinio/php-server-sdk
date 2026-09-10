@@ -17,9 +17,14 @@ class CurlEventPublisherTest extends TestCase
             $this->markTestSkipped("These tests use a shell script to stand in for curl");
         }
 
-        $this->_workDir = sys_get_temp_dir() . '/ld-curl-test-' . uniqid();
-        mkdir($this->_workDir . '/record', 0700, true);
-        mkdir($this->_workDir . '/payloads', 0700, true);
+        $workDir = sys_get_temp_dir() . '/ld-curl-test-' . uniqid();
+        mkdir($workDir . '/record', 0700, true);
+        mkdir($workDir . '/payloads', 0700, true);
+
+        // tempnam() resolves the directory it is given, and the temporary directory on macOS is
+        // reached through a symbolic link. Resolve the path here so that the tests compare it to
+        // the path that the publisher reports.
+        $this->_workDir = realpath($workDir);
 
         // This script records the arguments it receives, and a copy of any file that curl would
         // read the payload from. The publisher runs the request in the background, so the tests
