@@ -90,7 +90,7 @@ class CurlEventPublisher implements EventPublisher
         }
 
         if ($this->_payloadTempDir === null) {
-            return $this->makeCurlRequest($this->createCurlArgs("-d " . escapeshellarg($payload)));
+            return $this->makeCurlRequest($payload);
         }
 
         $payloadFile = $this->writePayloadFile($payload);
@@ -98,10 +98,7 @@ class CurlEventPublisher implements EventPublisher
             return false;
         }
 
-        return $this->makeCurlRequest(
-            $this->createCurlArgs("--data-binary @" . escapeshellarg($payloadFile)),
-            $payloadFile
-        );
+        return $this->makeCurlRequest($payload, $payloadFile);
     }
 
     /**
@@ -128,9 +125,14 @@ class CurlEventPublisher implements EventPublisher
     }
 
     /**
-     * Builds the curl command line. The caller supplies the option that provides the payload.
+     * Sends the payload with curl, in the background.
+     *
+     * Curl reads the payload from the command line. Name a file that already holds the payload to
+     * have curl read the file instead. The file is removed when the request ends.
+     *
+     * @psalm-suppress ForbiddenCode
      */
-    private function createCurlArgs(string $payloadOption): string
+    private function makeCurlRequest(string $payload, ?string $payloadFile = null): bool
     {
         $scheme = $this->_ssl ? "https://" : "http://";
         $args = " -X POST";
@@ -141,17 +143,15 @@ class CurlEventPublisher implements EventPublisher
             $args.= " -H " . escapeshellarg("$key: $value");
         }
 
-        $args.= " " . $payloadOption;
-        $args.= " " . escapeshellarg($scheme . $this->_host . ":" . $this->_port . $this->_path . "/bulk");
-        return $args;
-    }
+        if ($payloadFile === null) {
+            $args.= " -d " . escapeshellarg($payload);
+        } else {
+            $args.= " --data-binary @" . escapeshellarg($payloadFile);
+        }
 
-    /**
-     * @psalm-suppress ForbiddenCode
-     */
-    private function makeCurlRequest(string $args, ?string $payloadFile = null): bool
-    {
-        $cmd = $this->_curl . " " . $args;
+        $args.= " " . escapeshellarg($scheme . $this->_host . ":" . $this->_port . $this->_path . "/bulk");
+
+        $cmd = $this->_curl . $args;
         if ($payloadFile !== null) {
             // The subshell keeps the removal grouped with the request that reads the file.
             $cmd = "( " . $cmd . " ; rm -f " . escapeshellarg($payloadFile) . " )";
